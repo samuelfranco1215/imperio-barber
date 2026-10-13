@@ -25,7 +25,8 @@ import {
   Sparkles,
   ArrowRight,
   ShieldCheck,
-  AlertCircle
+  AlertCircle,
+  Smartphone
 } from "lucide-react";
 
 export default function Home() {
@@ -55,19 +56,31 @@ export default function Home() {
       {/* HEADER / NAV */}
       <header className="fixed top-0 w-full z-40 bg-zinc-950/85 backdrop-blur-md border-b border-zinc-800">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2 group">
-            <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-500 group-hover:bg-amber-500 group-hover:text-zinc-950 transition-all">
-              <Scissors className="w-4 h-4" />
+          <Link href="/" className="flex items-center gap-2.5 group">
+            <div className="relative w-9 h-9 rounded-xl overflow-hidden bg-white p-0.5 border border-amber-500/40 flex items-center justify-center shrink-0 shadow-sm group-hover:border-amber-500 transition-all">
+              <Image 
+                src="/logo.png" 
+                alt="Logo Imperio Barber" 
+                fill 
+                className="object-contain p-0.5"
+              />
             </div>
             <span className="font-extrabold text-lg sm:text-xl tracking-wider text-amber-500">
               {BUSINESS_INFO.name.toUpperCase()}
             </span>
           </Link>
-          <nav className="hidden md:flex gap-8 text-sm font-medium">
+          <nav className="hidden md:flex items-center gap-7 text-sm font-medium">
             <a href="#servicios" className="hover:text-amber-500 transition-colors">Servicios & Precios</a>
             <a href="#galeria" className="hover:text-amber-500 transition-colors">Galería</a>
             <a href="#ubicacion" className="hover:text-amber-500 transition-colors">Ubicación</a>
             <Link href="/mis-reservas" className="text-zinc-300 hover:text-amber-500 transition-colors font-semibold">Mis Reservas</Link>
+            <button 
+              onClick={() => window.dispatchEvent(new Event("open_install_modal"))}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 px-3 py-1.5 rounded-full border border-amber-500/30 transition-all"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>Instalar App</span>
+            </button>
           </nav>
           <div className="flex items-center gap-2 sm:gap-3">
             <Link 

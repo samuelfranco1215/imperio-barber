@@ -1,21 +1,46 @@
 {
   "name": "Imperio Barber",
-  "short_name": "Imperio",
-  "description": "Barbería premium en El Cerrito. Reserva tu turno online.",
+  "short_name": "Imperio Barber",
+  "description": "Barbería premium en El Cerrito, Valle del Cauca. Reserva tu turno online al instante.",
   "start_url": "/",
+  "id": "/",
   "display": "standalone",
-  "background_color": "#18181b",
-  "theme_color": "#18181b",
+  "orientation": "portrait",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
   "icons": [
     {
       "src": "/icon-192x192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     },
     {
       "src": "/icon-512x512.png",
       "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
       "type": "image/png"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshots/cover-wide.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Imperio Barber - Portada Oficial y Reservas Online"
+    },
+    {
+      "src": "/screenshots/cover-mobile.png",
+      "sizes": "750x1334",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Imperio Barber - Experiencia Móvil"
     }
   ]
 }
