@@ -9,6 +9,8 @@ import {
   DEFAULT_SERVICE_STATUS,
   getStoredServices, 
   getStoredServiceStatus,
+  fetchStoredServices,
+  fetchStoredServiceStatus,
   formatPriceCOP, 
   BUSINESS_INFO, 
   getGeneralWhatsAppUrl 
@@ -34,13 +36,22 @@ export default function Home() {
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus>(DEFAULT_SERVICE_STATUS);
 
   useEffect(() => {
-    // Cargar servicios y estado (localStorage si existen cambios del admin o defaults)
+    // Cargar servicios y estado (inmediatamente de caché y luego sincronizar con Supabase)
     const load = () => {
       setServiceList(getStoredServices().filter(s => s.active !== false));
       setServiceStatus(getStoredServiceStatus());
     };
 
     load();
+
+    // Actualización fresca desde Supabase
+    fetchStoredServices().then(services => {
+      setServiceList(services.filter(s => s.active !== false));
+    }).catch(() => {});
+
+    fetchStoredServiceStatus().then(status => {
+      setServiceStatus(status);
+    }).catch(() => {});
 
     window.addEventListener("imperio_store_updated", load);
     window.addEventListener("storage", load);

@@ -1,4 +1,5 @@
-// Store y gestión de datos de Imperio Barber con persistencia en localStorage
+// Store y gestión de datos de Imperio Barber con persistencia en Supabase y respaldo en localStorage
+import { getSupabase, isSupabaseConfigured, TABLES } from "@/lib/supabase";
 
 export interface BarberService {
   id: number;
@@ -130,8 +131,6 @@ export const DEFAULT_SERVICES: BarberService[] = [
 ];
 
 // Horario por defecto:
-// Lunes a Sábado: 8:00 AM - 8:00 PM (08:00 - 20:00)
-// Domingos: 8:00 AM - 2:00 PM (08:00 - 14:00)
 export const DEFAULT_SCHEDULE: ScheduleConfig = {
   mondayToSaturday: {
     open: "08:00",
@@ -147,7 +146,6 @@ export const DEFAULT_SCHEDULE: ScheduleConfig = {
   toleranceMinutes: 10,
 };
 
-// Generador de fecha hoy formateada YYYY-MM-DD
 export function getTodayDateString(): string {
   const now = new Date();
   const year = now.getFullYear();
@@ -201,7 +199,7 @@ export const DEFAULT_RESERVATIONS: BarberReservation[] = [
   }
 ];
 
-// Llaves de almacenamiento en localStorage
+// Llaves de almacenamiento en localStorage (Caché local rápido)
 const STORAGE_KEYS = {
   SERVICES: "imperio_barber_services_v3",
   RESERVATIONS: "imperio_barber_reservations_v2",
@@ -211,13 +209,106 @@ const STORAGE_KEYS = {
 };
 
 // Disparar evento para mantener componentes sincronizados en la misma pestaña
-function notifyStoreUpdate() {
+export function notifyStoreUpdate() {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event("imperio_store_updated"));
   }
 }
 
-// --- SERVICIOS ---
+export function isSupabaseActive(): boolean {
+  return isSupabaseConfigured();
+}
+
+// ==============================================================================
+// MAPEOS DB <-> TYPESCRIPT
+// ==============================================================================
+
+function mapServiceFromDb(row: any): BarberService {
+  return {
+    id: Number(row.id),
+    name: row.name || "",
+    description: row.description || "",
+    price: Number(row.price) || 0,
+    duration: Number(row.duration) || 30,
+    active: row.active ?? true,
+    category: row.category || undefined,
+  };
+}
+
+function mapServiceToDb(s: BarberService) {
+  return {
+    id: s.id,
+    name: s.name,
+    description: s.description || "",
+    price: s.price,
+    duration: s.duration,
+    active: s.active,
+    category: s.category || null,
+  };
+}
+
+function mapReservationFromDb(row: any): BarberReservation {
+  return {
+    id: row.id,
+    clientName: row.client_name || "",
+    phone: row.phone || "",
+    serviceId: Number(row.service_id) || 0,
+    serviceName: row.service_name || "",
+    price: Number(row.price) || 0,
+    date: row.date || "",
+    time: row.time || "",
+    status: row.status || "pending",
+    paymentMethod: row.payment_method || "cash",
+    cancellationReason: row.cancellation_reason || undefined,
+    notes: row.notes || undefined,
+    createdAt: row.created_at || new Date().toISOString(),
+  };
+}
+
+function mapReservationToDb(r: BarberReservation) {
+  return {
+    id: r.id,
+    client_name: r.clientName,
+    phone: r.phone,
+    service_id: r.serviceId,
+    service_name: r.serviceName || null,
+    price: r.price || 0,
+    date: r.date,
+    time: r.time,
+    status: r.status,
+    payment_method: r.paymentMethod || "cash",
+    cancellation_reason: r.cancellationReason || "",
+    notes: r.notes || "",
+    created_at: r.createdAt || new Date().toISOString(),
+  };
+}
+
+function mapBlockedRangeFromDb(row: any): BlockedTimeRange {
+  return {
+    id: row.id,
+    date: row.date || "",
+    startTime: row.start_time || "",
+    endTime: row.end_time || "",
+    reason: row.reason || "",
+    createdAt: row.created_at || new Date().toISOString(),
+  };
+}
+
+function mapBlockedRangeToDb(b: BlockedTimeRange) {
+  return {
+    id: b.id,
+    date: b.date,
+    start_time: b.startTime,
+    end_time: b.endTime,
+    reason: b.reason || "Horario reservado por el barbero",
+    created_at: b.createdAt || new Date().toISOString(),
+  };
+}
+
+// ==============================================================================
+// 1. SERVICIOS
+// ==============================================================================
+
 export function getStoredServices(): BarberService[] {
   if (typeof window === "undefined") return DEFAULT_SERVICES;
   try {
@@ -228,37 +319,94 @@ export function getStoredServices(): BarberService[] {
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
-      // Filtrar Limpieza Facial y actualizar descripción de barba si es la versión vieja
-      const cleaned: BarberService[] = parsed
-        .filter((s: BarberService) => !s.name.toLowerCase().includes("limpieza facial") && s.id !== 6)
-        .map((s: BarberService) => {
-          if (s.id === 3 || s.name.toLowerCase().includes("barba")) {
-            if (s.description.toLowerCase().includes("ritual completo")) {
-              return { ...s, description: "Arreglo y perfilado de barba." };
-            }
-          }
-          return s;
-        });
-      return cleaned;
+      return parsed;
     }
     return DEFAULT_SERVICES;
   } catch (err) {
-    console.error("Error al leer servicios:", err);
+    console.error("Error al leer servicios locales:", err);
     return DEFAULT_SERVICES;
   }
 }
 
-export function saveStoredServices(services: BarberService[]): void {
+export function setLocalServices(services: BarberService[]): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(STORAGE_KEYS.SERVICES, JSON.stringify(services));
-    notifyStoreUpdate();
   } catch (err) {
-    console.error("Error al guardar servicios:", err);
+    console.error("Error al persistir servicios locales:", err);
   }
 }
 
-// --- RESERVAS ---
+export async function fetchStoredServices(): Promise<BarberService[]> {
+  const local = getStoredServices();
+  const client = getSupabase();
+  if (!client) return local;
+
+  try {
+    const { data, error } = await client
+      .from(TABLES.SERVICIOS)
+      .select("*")
+      .order("id", { ascending: true });
+
+    if (error) {
+      console.warn("Supabase servicios select error:", error.message);
+      return local;
+    }
+
+    if (data && data.length > 0) {
+      const mapped = data.map(mapServiceFromDb);
+      setLocalServices(mapped);
+      return mapped;
+    } else {
+      // Si la tabla está vacía en Supabase, auto-sembrar los servicios por defecto
+      const dbDefaults = DEFAULT_SERVICES.map(mapServiceToDb);
+      await client.from(TABLES.SERVICIOS).insert(dbDefaults);
+      setLocalServices(DEFAULT_SERVICES);
+      return DEFAULT_SERVICES;
+    }
+  } catch (err) {
+    console.error("Error al consultar servicios en Supabase:", err);
+    return local;
+  }
+}
+
+export async function saveStoredServices(services: BarberService[]): Promise<void> {
+  setLocalServices(services);
+  notifyStoreUpdate();
+
+  const client = getSupabase();
+  if (!client) return;
+
+  try {
+    const dbPayload = services.map(mapServiceToDb);
+    const { error } = await client
+      .from(TABLES.SERVICIOS)
+      .upsert(dbPayload, { onConflict: "id" });
+    if (error) console.error("Error al guardar servicios en Supabase:", error);
+  } catch (err) {
+    console.error("Error al guardar servicios en Supabase:", err);
+  }
+}
+
+export async function deleteStoredService(id: number): Promise<void> {
+  const current = getStoredServices().filter(s => s.id !== id);
+  setLocalServices(current);
+  notifyStoreUpdate();
+
+  const client = getSupabase();
+  if (!client) return;
+
+  try {
+    await client.from(TABLES.SERVICIOS).delete().eq("id", id);
+  } catch (err) {
+    console.error("Error al eliminar servicio en Supabase:", err);
+  }
+}
+
+// ==============================================================================
+// 2. RESERVAS
+// ==============================================================================
+
 export function getStoredReservations(): BarberReservation[] {
   if (typeof window === "undefined") return DEFAULT_RESERVATIONS;
   try {
@@ -271,22 +419,68 @@ export function getStoredReservations(): BarberReservation[] {
     if (Array.isArray(parsed)) return parsed;
     return DEFAULT_RESERVATIONS;
   } catch (err) {
-    console.error("Error al leer reservas:", err);
+    console.error("Error al leer reservas locales:", err);
     return DEFAULT_RESERVATIONS;
   }
 }
 
-export function saveStoredReservations(reservations: BarberReservation[]): void {
+export function setLocalReservations(reservations: BarberReservation[]): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(STORAGE_KEYS.RESERVATIONS, JSON.stringify(reservations));
-    notifyStoreUpdate();
   } catch (err) {
-    console.error("Error al guardar reservas:", err);
+    console.error("Error al persistir reservas locales:", err);
   }
 }
 
-export function addReservation(reservation: Omit<BarberReservation, "id" | "createdAt">): BarberReservation {
+export async function fetchStoredReservations(): Promise<BarberReservation[]> {
+  const local = getStoredReservations();
+  const client = getSupabase();
+  if (!client) return local;
+
+  try {
+    const { data, error } = await client
+      .from(TABLES.RESERVAS)
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.warn("Supabase reservas select error:", error.message);
+      return local;
+    }
+
+    if (Array.isArray(data)) {
+      const mapped = data.map(mapReservationFromDb);
+      setLocalReservations(mapped);
+      return mapped;
+    }
+    return local;
+  } catch (err) {
+    console.error("Error al consultar reservas en Supabase:", err);
+    return local;
+  }
+}
+
+export async function saveStoredReservations(reservations: BarberReservation[]): Promise<void> {
+  setLocalReservations(reservations);
+  notifyStoreUpdate();
+
+  const client = getSupabase();
+  if (!client) return;
+
+  try {
+    if (reservations.length > 0) {
+      const dbPayload = reservations.map(mapReservationToDb);
+      await client.from(TABLES.RESERVAS).upsert(dbPayload, { onConflict: "id" });
+    }
+  } catch (err) {
+    console.error("Error al guardar reservas en Supabase:", err);
+  }
+}
+
+export async function addReservation(
+  reservation: Omit<BarberReservation, "id" | "createdAt">
+): Promise<BarberReservation> {
   const all = getStoredReservations();
   const randomSuffix = Math.floor(1000 + Math.random() * 9000);
   const newReservation: BarberReservation = {
@@ -296,15 +490,31 @@ export function addReservation(reservation: Omit<BarberReservation, "id" | "crea
   };
 
   const updated = [newReservation, ...all];
-  saveStoredReservations(updated);
+  setLocalReservations(updated);
+  notifyStoreUpdate();
+
+  const client = getSupabase();
+  if (client) {
+    try {
+      const { error } = await client
+        .from(TABLES.RESERVAS)
+        .insert(mapReservationToDb(newReservation));
+      if (error) {
+        console.error("Error al insertar reserva en Supabase:", error);
+      }
+    } catch (err) {
+      console.error("Error al conectar con Supabase para reserva:", err);
+    }
+  }
+
   return newReservation;
 }
 
-export function updateReservationStatus(
+export async function updateReservationStatus(
   id: string, 
   newStatus: 'pending' | 'completed' | 'cancelled',
   cancellationReason?: string
-): void {
+): Promise<void> {
   const all = getStoredReservations();
   const updated = all.map(r => {
     if (r.id === id) {
@@ -316,10 +526,48 @@ export function updateReservationStatus(
     }
     return r;
   });
-  saveStoredReservations(updated);
+  setLocalReservations(updated);
+  notifyStoreUpdate();
+
+  const client = getSupabase();
+  if (!client) return;
+
+  try {
+    const updatePayload: Record<string, any> = { status: newStatus };
+    if (cancellationReason !== undefined) {
+      updatePayload.cancellation_reason = cancellationReason;
+    }
+    const { error } = await client
+      .from(TABLES.RESERVAS)
+      .update(updatePayload)
+      .eq("id", id);
+    if (error) {
+      console.error("Error al actualizar estado en Supabase:", error);
+    }
+  } catch (err) {
+    console.error("Error al conectar con Supabase para actualizar reserva:", err);
+  }
 }
 
-// --- HORARIOS ---
+export async function deleteStoredReservation(id: string): Promise<void> {
+  const all = getStoredReservations().filter(r => r.id !== id);
+  setLocalReservations(all);
+  notifyStoreUpdate();
+
+  const client = getSupabase();
+  if (!client) return;
+
+  try {
+    await client.from(TABLES.RESERVAS).delete().eq("id", id);
+  } catch (err) {
+    console.error("Error al eliminar reserva en Supabase:", err);
+  }
+}
+
+// ==============================================================================
+// 3. HORARIOS BASE
+// ==============================================================================
+
 export function getStoredSchedule(): ScheduleConfig {
   if (typeof window === "undefined") return DEFAULT_SCHEDULE;
   try {
@@ -337,17 +585,72 @@ export function getStoredSchedule(): ScheduleConfig {
   }
 }
 
-export function saveStoredSchedule(schedule: ScheduleConfig): void {
+export function setLocalSchedule(schedule: ScheduleConfig): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(STORAGE_KEYS.SCHEDULE, JSON.stringify(schedule));
-    notifyStoreUpdate();
   } catch (err) {
-    console.error("Error al guardar horarios:", err);
+    console.error("Error al persistir horarios:", err);
   }
 }
 
-// --- ESTADO DEL SERVICIO (MODO CERRAR RESERVAS / NO HAY SERVICIO) ---
+export async function fetchStoredSchedule(): Promise<ScheduleConfig> {
+  const local = getStoredSchedule();
+  const client = getSupabase();
+  if (!client) return local;
+
+  try {
+    const { data, error } = await client
+      .from(TABLES.CONFIGURACION)
+      .select("value")
+      .eq("key", "schedule")
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      console.warn("Supabase schedule select error:", error.message);
+      return local;
+    }
+
+    if (data && data.value) {
+      const scheduleVal = data.value as ScheduleConfig;
+      setLocalSchedule(scheduleVal);
+      return scheduleVal;
+    } else {
+      // Auto-sembrar configuración por defecto si no existe
+      await client.from(TABLES.CONFIGURACION).insert({
+        key: "schedule",
+        value: DEFAULT_SCHEDULE,
+      });
+      return DEFAULT_SCHEDULE;
+    }
+  } catch (err) {
+    console.error("Error al consultar horario en Supabase:", err);
+    return local;
+  }
+}
+
+export async function saveStoredSchedule(schedule: ScheduleConfig): Promise<void> {
+  setLocalSchedule(schedule);
+  notifyStoreUpdate();
+
+  const client = getSupabase();
+  if (!client) return;
+
+  try {
+    await client.from(TABLES.CONFIGURACION).upsert({
+      key: "schedule",
+      value: schedule,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "key" });
+  } catch (err) {
+    console.error("Error al guardar horario en Supabase:", err);
+  }
+}
+
+// ==============================================================================
+// 4. ESTADO DEL SERVICIO (MODO "NO HAY SERVICIO" / PAUSAR RESERVAS)
+// ==============================================================================
+
 export function getStoredServiceStatus(): ServiceStatus {
   if (typeof window === "undefined") return DEFAULT_SERVICE_STATUS;
   try {
@@ -368,23 +671,83 @@ export function getStoredServiceStatus(): ServiceStatus {
   }
 }
 
-export function saveStoredServiceStatus(status: Partial<ServiceStatus>): void {
+export function setLocalServiceStatus(status: ServiceStatus): void {
   if (typeof window === "undefined") return;
   try {
-    const current = getStoredServiceStatus();
-    const updated: ServiceStatus = {
-      ...current,
-      ...status,
-      updatedAt: new Date().toISOString(),
-    };
-    localStorage.setItem(STORAGE_KEYS.SERVICE_STATUS, JSON.stringify(updated));
-    notifyStoreUpdate();
+    localStorage.setItem(STORAGE_KEYS.SERVICE_STATUS, JSON.stringify(status));
   } catch (err) {
-    console.error("Error al guardar estado del servicio:", err);
+    console.error("Error al persistir estado de servicio:", err);
   }
 }
 
-// --- HORARIOS BLOQUEADOS POR EL ADMIN ---
+export async function fetchStoredServiceStatus(): Promise<ServiceStatus> {
+  const local = getStoredServiceStatus();
+  const client = getSupabase();
+  if (!client) return local;
+
+  try {
+    const { data, error } = await client
+      .from(TABLES.CONFIGURACION)
+      .select("value")
+      .eq("key", "service_status")
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      console.warn("Supabase service_status select error:", error.message);
+      return local;
+    }
+
+    if (data && data.value) {
+      const statusVal = data.value as ServiceStatus;
+      const clean: ServiceStatus = {
+        isPaused: Boolean(statusVal.isPaused),
+        pauseMessage: statusVal.pauseMessage || DEFAULT_SERVICE_STATUS.pauseMessage,
+        updatedAt: statusVal.updatedAt,
+      };
+      setLocalServiceStatus(clean);
+      return clean;
+    } else {
+      // Auto-sembrar status por defecto si no existe
+      await client.from(TABLES.CONFIGURACION).insert({
+        key: "service_status",
+        value: DEFAULT_SERVICE_STATUS,
+      });
+      return DEFAULT_SERVICE_STATUS;
+    }
+  } catch (err) {
+    console.error("Error al consultar estado de servicio en Supabase:", err);
+    return local;
+  }
+}
+
+export async function saveStoredServiceStatus(status: Partial<ServiceStatus>): Promise<void> {
+  const current = getStoredServiceStatus();
+  const updated: ServiceStatus = {
+    ...current,
+    ...status,
+    updatedAt: new Date().toISOString(),
+  };
+  setLocalServiceStatus(updated);
+  notifyStoreUpdate();
+
+  const client = getSupabase();
+  if (!client) return;
+
+  try {
+    await client.from(TABLES.CONFIGURACION).upsert({
+      key: "service_status",
+      value: updated,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "key" });
+  } catch (err) {
+    console.error("Error al guardar estado de servicio en Supabase:", err);
+  }
+}
+
+// ==============================================================================
+// 5. HORARIOS BLOQUEADOS POR EL ADMIN
+// ==============================================================================
+
 export function getStoredBlockedRanges(): BlockedTimeRange[] {
   if (typeof window === "undefined") return [];
   try {
@@ -398,33 +761,207 @@ export function getStoredBlockedRanges(): BlockedTimeRange[] {
   }
 }
 
-export function saveStoredBlockedRanges(ranges: BlockedTimeRange[]): void {
+export function setLocalBlockedRanges(ranges: BlockedTimeRange[]): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(STORAGE_KEYS.BLOCKED_SLOTS, JSON.stringify(ranges));
-    notifyStoreUpdate();
   } catch (err) {
-    console.error("Error al guardar horarios bloqueados:", err);
+    console.error("Error al persistir horarios bloqueados:", err);
   }
 }
 
-export function addBlockedRange(range: Omit<BlockedTimeRange, "id" | "createdAt">): BlockedTimeRange {
+export async function fetchStoredBlockedRanges(): Promise<BlockedTimeRange[]> {
+  const local = getStoredBlockedRanges();
+  const client = getSupabase();
+  if (!client) return local;
+
+  try {
+    const { data, error } = await client
+      .from(TABLES.BLOQUEOS)
+      .select("*")
+      .order("date", { ascending: true });
+
+    if (error) {
+      console.warn("Supabase bloqueos select error:", error.message);
+      return local;
+    }
+
+    if (Array.isArray(data)) {
+      const mapped = data.map(mapBlockedRangeFromDb);
+      setLocalBlockedRanges(mapped);
+      return mapped;
+    }
+    return local;
+  } catch (err) {
+    console.error("Error al consultar bloqueos en Supabase:", err);
+    return local;
+  }
+}
+
+export async function saveStoredBlockedRanges(ranges: BlockedTimeRange[]): Promise<void> {
+  setLocalBlockedRanges(ranges);
+  notifyStoreUpdate();
+
+  const client = getSupabase();
+  if (!client) return;
+
+  try {
+    const dbPayload = ranges.map(mapBlockedRangeToDb);
+    if (dbPayload.length > 0) {
+      await client.from(TABLES.BLOQUEOS).upsert(dbPayload, { onConflict: "id" });
+    }
+  } catch (err) {
+    console.error("Error al guardar bloqueos en Supabase:", err);
+  }
+}
+
+export async function addBlockedRange(
+  range: Omit<BlockedTimeRange, "id" | "createdAt">
+): Promise<BlockedTimeRange> {
   const current = getStoredBlockedRanges();
   const newRange: BlockedTimeRange = {
     ...range,
     id: `BLK-${Math.floor(1000 + Math.random() * 9000)}`,
     createdAt: new Date().toISOString(),
   };
-  saveStoredBlockedRanges([...current, newRange]);
+
+  const updated = [...current, newRange];
+  setLocalBlockedRanges(updated);
+  notifyStoreUpdate();
+
+  const client = getSupabase();
+  if (client) {
+    try {
+      await client.from(TABLES.BLOQUEOS).insert(mapBlockedRangeToDb(newRange));
+    } catch (err) {
+      console.error("Error al guardar bloqueo en Supabase:", err);
+    }
+  }
+
   return newRange;
 }
 
-export function removeBlockedRange(id: string): void {
-  const current = getStoredBlockedRanges();
-  saveStoredBlockedRanges(current.filter(r => r.id !== id));
+export async function removeBlockedRange(id: string): Promise<void> {
+  const current = getStoredBlockedRanges().filter(r => r.id !== id);
+  setLocalBlockedRanges(current);
+  notifyStoreUpdate();
+
+  const client = getSupabase();
+  if (!client) return;
+
+  try {
+    await client.from(TABLES.BLOQUEOS).delete().eq("id", id);
+  } catch (err) {
+    console.error("Error al eliminar bloqueo en Supabase:", err);
+  }
 }
 
-// --- GENERADOR DE TURNOS DISPONIBLES ---
+// ==============================================================================
+// 6. SINCRONIZACIÓN Y TIEMPO REAL CON SUPABASE
+// ==============================================================================
+
+export async function syncAllFromSupabase(): Promise<{
+  services: BarberService[];
+  reservations: BarberReservation[];
+  schedule: ScheduleConfig;
+  serviceStatus: ServiceStatus;
+  blockedRanges: BlockedTimeRange[];
+}> {
+  const [sRes, rRes, schRes, statRes, bRes] = await Promise.allSettled([
+    fetchStoredServices(),
+    fetchStoredReservations(),
+    fetchStoredSchedule(),
+    fetchStoredServiceStatus(),
+    fetchStoredBlockedRanges(),
+  ]);
+
+  const services = sRes.status === "fulfilled" ? sRes.value : getStoredServices();
+  const reservations = rRes.status === "fulfilled" ? rRes.value : getStoredReservations();
+  const schedule = schRes.status === "fulfilled" ? schRes.value : getStoredSchedule();
+  const serviceStatus = statRes.status === "fulfilled" ? statRes.value : getStoredServiceStatus();
+  const blockedRanges = bRes.status === "fulfilled" ? bRes.value : getStoredBlockedRanges();
+
+  notifyStoreUpdate();
+
+  return { services, reservations, schedule, serviceStatus, blockedRanges };
+}
+
+let activeRealtimeChannel: any = null;
+
+export function initSupabaseRealtime(): (() => void) {
+  if (typeof window === "undefined") return () => {};
+  const client = getSupabase();
+  if (!client) return () => {};
+
+  if (activeRealtimeChannel) {
+    return () => {};
+  }
+
+  try {
+    activeRealtimeChannel = client
+      .channel("imperio_realtime_sync")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: TABLES.RESERVAS },
+        async () => {
+          await fetchStoredReservations();
+          notifyStoreUpdate();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: TABLES.SERVICIOS },
+        async () => {
+          await fetchStoredServices();
+          notifyStoreUpdate();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: TABLES.BLOQUEOS },
+        async () => {
+          await fetchStoredBlockedRanges();
+          notifyStoreUpdate();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: TABLES.CONFIGURACION },
+        async () => {
+          await Promise.allSettled([fetchStoredServiceStatus(), fetchStoredSchedule()]);
+          notifyStoreUpdate();
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          console.log("⚡ Supabase Realtime activo para Imperio Barber");
+        }
+      });
+  } catch (err) {
+    console.error("Error al inicializar Supabase Realtime:", err);
+  }
+
+  return () => {
+    if (activeRealtimeChannel && client) {
+      client.removeChannel(activeRealtimeChannel);
+      activeRealtimeChannel = null;
+    }
+  };
+}
+
+// Auto-inicializar Realtime en el navegador si Supabase está configurado
+if (typeof window !== "undefined") {
+  if (isSupabaseConfigured()) {
+    initSupabaseRealtime();
+    // Primera carga en segundo plano
+    syncAllFromSupabase().catch(() => {});
+  }
+}
+
+// ==============================================================================
+// 7. GENERADOR DE TURNOS DISPONIBLES
+// ==============================================================================
+
 export interface GeneratedSlot {
   time: string; // "08:00"
   time12: string; // "8:00 AM"
@@ -446,7 +983,6 @@ export function computeSlotsForDate(
   const ranges = blockedRanges !== undefined ? blockedRanges : getStoredBlockedRanges();
   const dayBlocks = ranges.filter(r => r.date === dateStr);
 
-  // Parsear fecha
   const [year, month, day] = dateStr.split('-').map(Number);
   const dateObj = new Date(year, month - 1, day, 12, 0, 0);
   const dayOfWeek = dateObj.getDay(); // 0 = Domingo, 1 = Lunes, ..., 6 = Sábado
@@ -461,7 +997,6 @@ export function computeSlotsForDate(
     };
   }
 
-  // Parsear horas
   const [openH, openM] = daySchedule.open.split(':').map(Number);
   const [closeH, closeM] = daySchedule.close.split(':').map(Number);
 
@@ -469,11 +1004,9 @@ export function computeSlotsForDate(
   const endMinutes = closeH * 60 + closeM;
   const step = schedule.slotDurationMinutes || 30;
 
-  // Reservas activas para esta fecha (excluyendo canceladas)
   const activeBookings = reservations.filter(r => r.date === dateStr && r.status !== 'cancelled');
   const bookedTimes = new Set(activeBookings.map(r => r.time));
 
-  // Verificar si la fecha es hoy para bloquear turnos pasados en cliente
   let isToday = false;
   let currentTotalMinutes = 0;
   if (typeof window !== "undefined") {
@@ -490,7 +1023,6 @@ export function computeSlotsForDate(
     const slotM = m % 60;
     const timeStr = `${String(slotH).padStart(2, '0')}:${String(slotM).padStart(2, '0')}`;
     
-    // Formato 12 horas (ej. 8:30 AM, 1:00 PM)
     const hour12 = slotH % 12 === 0 ? 12 : slotH % 12;
     const ampm = slotH >= 12 ? 'PM' : 'AM';
     const time12 = `${hour12}:${String(slotM).padStart(2, '0')} ${ampm}`;
@@ -498,7 +1030,6 @@ export function computeSlotsForDate(
     const isOccupied = bookedTimes.has(timeStr);
     const isPast = isToday && m <= currentTotalMinutes;
 
-    // Comprobar si cae en algún rango bloqueado por el administrador
     const matchingBlock = dayBlocks.find(b => timeStr >= b.startTime && timeStr < b.endTime);
     const isBlocked = !!matchingBlock;
     const blockReason = matchingBlock?.reason || "Horario reservado por el barbero";
@@ -522,7 +1053,10 @@ export function computeSlotsForDate(
   };
 }
 
-// --- FORMATEADORES ---
+// ==============================================================================
+// 8. FORMATEADORES
+// ==============================================================================
+
 export function formatPriceCOP(amount: number): string {
   if (typeof amount !== 'number' || isNaN(amount)) return "$0 COP";
   return `$${amount.toLocaleString('es-CO')} COP`;
@@ -560,7 +1094,10 @@ export function formatTime12h(time24: string): string {
   return `${hour12}:${m} ${ampm}`;
 }
 
-// --- GENERADORES DE ENLACES DE WHATSAPP ---
+// ==============================================================================
+// 9. GENERADORES DE ENLACES DE WHATSAPP
+// ==============================================================================
+
 export function getWhatsAppReservationUrl(reservation: BarberReservation): string {
   const serviceText = reservation.serviceName || "Servicio de Barbería";
   const priceText = reservation.price ? formatPriceCOP(reservation.price) : "";
@@ -591,7 +1128,6 @@ export function getGeneralWhatsAppUrl(): string {
 }
 
 export function getClientContactWhatsAppUrl(clientPhone: string, clientName: string, reservationCode: string): string {
-  // Limpiar teléfono
   let cleaned = clientPhone.replace(/\D/g, '');
   if (cleaned.length === 10 && cleaned.startsWith('3')) {
     cleaned = `57${cleaned}`;
@@ -626,4 +1162,3 @@ export function getCancellationWhatsAppUrl(
   const text = getCancellationMessageText(reservation, reason);
   return `https://wa.me/${cleaned}?text=${encodeURIComponent(text)}`;
 }
-

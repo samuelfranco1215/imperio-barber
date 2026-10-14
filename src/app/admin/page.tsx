@@ -32,7 +32,11 @@ import {
   getStoredBlockedRanges,
   saveStoredBlockedRanges,
   addBlockedRange,
-  removeBlockedRange
+  removeBlockedRange,
+  syncAllFromSupabase,
+  deleteStoredService,
+  deleteStoredReservation,
+  isSupabaseActive
 } from "@/data/barberStore";
 import { gallery } from "@/data/mockData";
 import { 
@@ -108,19 +112,41 @@ function AdminDashboard() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  // Cargar datos y sincronizar
-  const refreshData = () => {
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  // Cargar datos y sincronizar con Supabase
+  const refreshData = async () => {
+    // 1. Cargar caché inmediato
     setReservations(getStoredReservations());
     setServices(getStoredServices());
     setSchedule(getStoredSchedule());
     setServiceStatus(getStoredServiceStatus());
     setBlockedRanges(getStoredBlockedRanges());
+
+    // 2. Traer la versión compartida de Supabase
+    if (isSupabaseActive()) {
+      setIsSyncing(true);
+      try {
+        const synced = await syncAllFromSupabase();
+        if (synced) {
+          setReservations(synced.reservations);
+          setServices(synced.services);
+          setSchedule(synced.schedule);
+          setServiceStatus(synced.serviceStatus);
+          setBlockedRanges(synced.blockedRanges);
+        }
+      } catch (err) {
+        console.error("Error sincronizando admin con Supabase:", err);
+      } finally {
+        setIsSyncing(false);
+      }
+    }
   };
 
-  const handleToggleServiceStatus = () => {
+  const handleToggleServiceStatus = async () => {
     const nextPaused = !serviceStatus.isPaused;
-    saveStoredServiceStatus({ isPaused: nextPaused });
     setServiceStatus(prev => ({ ...prev, isPaused: nextPaused }));
+    await saveStoredServiceStatus({ isPaused: nextPaused });
     if (nextPaused) {
       showToast("🔴 Modo 'No hay servicio' activado. Reservas pausadas.");
     } else {
@@ -234,7 +260,7 @@ function AdminDashboard() {
   };
 
   // Agregar y eliminar bloqueos de horarios específicos
-  const handleAddBlockedRange = (e: React.FormEvent) => {
+  const handleAddBlockedRange = async (e: React.FormEvent) => {
     e.preventDefault();
     const dateToUse = newBlockDate || todayStr;
     if (!dateToUse) {
@@ -250,7 +276,7 @@ function AdminDashboard() {
       return;
     }
 
-    addBlockedRange({
+    await addBlockedRange({
       date: dateToUse,
       startTime: newBlockStart,
       endTime: newBlockEnd,
@@ -261,17 +287,17 @@ function AdminDashboard() {
     setBlockedRanges(getStoredBlockedRanges());
   };
 
-  const handleRemoveBlockedRange = (id: string) => {
+  const handleRemoveBlockedRange = async (id: string) => {
     if (confirm("¿Deseas desbloquear este horario para que los clientes puedan volver a reservar?")) {
-      removeBlockedRange(id);
+      await removeBlockedRange(id);
       setBlockedRanges(getStoredBlockedRanges());
       showToast("Horario desbloqueado exitosamente.");
     }
   };
 
   // Actualizar estado de una reserva directamente (atendida o pendiente)
-  const handleUpdateStatus = (id: string, newStatus: 'pending' | 'completed' | 'cancelled') => {
-    updateReservationStatus(id, newStatus);
+  const handleUpdateStatus = async (id: string, newStatus: 'pending' | 'completed' | 'cancelled') => {
+    await updateReservationStatus(id, newStatus);
     const statusLabel = newStatus === 'completed' ? 'atendida' : newStatus === 'cancelled' ? 'cancelada' : 'pendiente';
     showToast(`Reserva ${id} marcada como ${statusLabel}.`);
   };
@@ -283,12 +309,12 @@ function AdminDashboard() {
   };
 
   // Confirmar cancelación, persistir motivo y abrir WhatsApp automáticamente
-  const handleConfirmCancellation = (e?: React.FormEvent) => {
+  const handleConfirmCancellation = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!cancellingReservation) return;
 
     const reason = cancellationReason.trim() || "Inconveniente de fuerza mayor";
-    updateReservationStatus(cancellingReservation.id, "cancelled", reason);
+    await updateReservationStatus(cancellingReservation.id, "cancelled", reason);
 
     const whatsappUrl = getCancellationWhatsAppUrl(cancellingReservation, reason);
     if (typeof window !== "undefined") {
@@ -311,10 +337,10 @@ function AdminDashboard() {
   };
 
   // Eliminar una reserva
-  const handleDeleteReservation = (id: string) => {
+  const handleDeleteReservation = async (id: string) => {
     if (confirm(`¿Estás seguro de que deseas eliminar la reserva ${id}?`)) {
-      const updated = reservations.filter(r => r.id !== id);
-      saveStoredReservations(updated);
+      await deleteStoredReservation(id);
+      setReservations(getStoredReservations());
       showToast(`Reserva ${id} eliminada.`);
     }
   };
@@ -356,7 +382,7 @@ function AdminDashboard() {
     });
   };
 
-  const handleSaveServiceForm = (e: React.FormEvent) => {
+  const handleSaveServiceForm = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!serviceFormData.name.trim()) {
       alert("Ingresa un nombre para el servicio.");
@@ -370,7 +396,8 @@ function AdminDashboard() {
           ? { ...s, ...serviceFormData, name: serviceFormData.name.trim(), description: serviceFormData.description.trim() } 
           : s
       );
-      saveStoredServices(updated);
+      setServices(updated);
+      await saveStoredServices(updated);
       setEditingService(null);
       showToast(`Servicio "${serviceFormData.name}" actualizado.`);
     } else if (isCreatingService) {
@@ -384,29 +411,33 @@ function AdminDashboard() {
         duration: Number(serviceFormData.duration) || 30,
         active: serviceFormData.active,
       };
-      saveStoredServices([...services, newService]);
+      const updated = [...services, newService];
+      setServices(updated);
+      await saveStoredServices(updated);
       setIsCreatingService(false);
       showToast(`Servicio "${newService.name}" creado con éxito.`);
     }
   };
 
-  const handleToggleServiceActive = (id: number) => {
+  const handleToggleServiceActive = async (id: number) => {
     const updated = services.map(s => s.id === id ? { ...s, active: !s.active } : s);
-    saveStoredServices(updated);
+    setServices(updated);
+    await saveStoredServices(updated);
     showToast("Estado del servicio actualizado.");
   };
 
-  const handleDeleteService = (id: number, name: string) => {
+  const handleDeleteService = async (id: number, name: string) => {
     if (confirm(`¿Deseas eliminar el servicio "${name}"?`)) {
-      const updated = services.filter(s => s.id !== id);
-      saveStoredServices(updated);
+      await deleteStoredService(id);
+      setServices(getStoredServices());
       showToast(`Servicio "${name}" eliminado.`);
     }
   };
 
-  const handleResetServices = () => {
+  const handleResetServices = async () => {
     if (confirm("¿Restablecer todos los servicios a la configuración original de Imperio Barber?")) {
-      saveStoredServices(DEFAULT_SERVICES);
+      await saveStoredServices(DEFAULT_SERVICES);
+      setServices(DEFAULT_SERVICES);
       showToast("Servicios restablecidos a los valores por defecto.");
     }
   };
@@ -420,15 +451,17 @@ function AdminDashboard() {
     setScheduleForm(schedule);
   }, [schedule]);
 
-  const handleSaveSchedule = (e: React.FormEvent) => {
+  const handleSaveSchedule = async (e: React.FormEvent) => {
     e.preventDefault();
-    saveStoredSchedule(scheduleForm);
+    await saveStoredSchedule(scheduleForm);
+    setSchedule(scheduleForm);
     showToast("¡Horarios de atención guardados exitosamente!");
   };
 
-  const handleResetSchedule = () => {
+  const handleResetSchedule = async () => {
     if (confirm("¿Restablecer horarios por defecto (Lunes-Sábado 8am-8pm, Domingos 8am-2pm)?")) {
-      saveStoredSchedule(DEFAULT_SCHEDULE);
+      await saveStoredSchedule(DEFAULT_SCHEDULE);
+      setSchedule(DEFAULT_SCHEDULE);
       setScheduleForm(DEFAULT_SCHEDULE);
       showToast("Horarios restablecidos por defecto.");
     }
@@ -449,15 +482,35 @@ function AdminDashboard() {
       <div className="md:hidden bg-zinc-900 border-b border-zinc-800 p-4 flex items-center justify-between z-30 sticky top-0">
         <div>
           <span className="font-extrabold text-amber-500 tracking-wider text-lg">{BUSINESS_INFO.name.toUpperCase()}</span>
-          <span className="text-[10px] text-zinc-500 uppercase tracking-widest block">Panel Administrador</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-zinc-500 uppercase tracking-widest">Admin</span>
+            {isSupabaseActive() ? (
+              <span className="text-[9px] text-cyan-400 font-bold bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">
+                🟢 Supabase
+              </span>
+            ) : (
+              <span className="text-[9px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                🟡 Local
+              </span>
+            )}
+          </div>
         </div>
-        <button
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="p-2 rounded-xl bg-zinc-800 text-zinc-300 hover:text-white"
-          aria-label="Menú"
-        >
-          {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => refreshData()}
+            title="Sincronizar"
+            className="p-2 rounded-xl bg-zinc-800 text-zinc-300 hover:text-white"
+          >
+            <RefreshCw className={`w-4 h-4 ${isSyncing ? "animate-spin text-amber-400" : ""}`} />
+          </button>
+          <button
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            className="p-2 rounded-xl bg-zinc-800 text-zinc-300 hover:text-white"
+            aria-label="Menú"
+          >
+            {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+          </button>
+        </div>
       </div>
 
       {/* Sidebar de Navegación */}
@@ -476,7 +529,7 @@ function AdminDashboard() {
           </Link>
 
           {/* Indicador de estado del servicio en la barra lateral */}
-          <div className="mt-3">
+          <div className="mt-3 space-y-2">
             {serviceStatus.isPaused ? (
               <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-500/15 border border-red-500/30 text-red-400 text-[11px] font-bold">
                 <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
@@ -488,6 +541,28 @@ function AdminDashboard() {
                 <span>Servicio Activo</span>
               </div>
             )}
+
+            {/* Estado de Supabase */}
+            <div className="flex items-center justify-between pt-1">
+              {isSupabaseActive() ? (
+                <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-[10px] font-bold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+                  <span>Supabase Compartido</span>
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[10px] font-medium" title="Agrega tus credenciales en .env.local">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                  <span>Modo Local (.env.local)</span>
+                </div>
+              )}
+              <button
+                onClick={() => refreshData()}
+                title="Sincronizar ahora"
+                className="p-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-amber-400 transition-colors"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? "animate-spin text-amber-400" : ""}`} />
+              </button>
+            </div>
           </div>
         </div>
         

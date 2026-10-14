@@ -5,6 +5,7 @@ import Link from "next/link";
 import { 
   BarberReservation, 
   getStoredReservations, 
+  fetchStoredReservations,
   formatDateSpanish, 
   formatTime12h, 
   formatPriceCOP,
@@ -34,11 +35,27 @@ function MisReservasContent() {
   const [reservations, setReservations] = useState<BarberReservation[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [todayStr, setTodayStr] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  const loadReservations = async () => {
+    // 1. Mostrar de inmediato la caché local
+    setReservations(getStoredReservations());
+
+    // 2. Traer de Supabase la lista más reciente compartida
+    setIsLoading(true);
+    try {
+      const fresh = await fetchStoredReservations();
+      setReservations(fresh);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
     setTodayStr(getTodayDateString());
-    const all = getStoredReservations();
-    setReservations(all);
+    loadReservations();
 
     // Pre-cargar si el usuario ya reservó antes en este dispositivo
     if (typeof window !== "undefined") {
@@ -52,11 +69,24 @@ function MisReservasContent() {
         setHasSearched(true);
       }
     }
+
+    const onUpdate = () => {
+      setReservations(getStoredReservations());
+    };
+
+    window.addEventListener("imperio_store_updated", onUpdate);
+    window.addEventListener("storage", onUpdate);
+    return () => {
+      window.removeEventListener("imperio_store_updated", onUpdate);
+      window.removeEventListener("storage", onUpdate);
+    };
   }, []);
 
-  const handleSearchSubmit = (e: React.FormEvent) => {
+  const handleSearchSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setHasSearched(true);
+    // Asegurar que tenemos la última información de Supabase al buscar
+    await loadReservations();
   };
 
   // Filtrar reservas que coincidan con el término de búsqueda

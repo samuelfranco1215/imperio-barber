@@ -23,7 +23,9 @@ import {
   BUSINESS_INFO,
   GeneratedSlot,
   BlockedTimeRange,
-  getStoredBlockedRanges
+  getStoredBlockedRanges,
+  fetchStoredReservations,
+  syncAllFromSupabase
 } from "@/data/barberStore";
 import { 
   Calendar as CalendarIcon, 
@@ -72,7 +74,7 @@ function BookingContent() {
   const [createdReservation, setCreatedReservation] = useState<BarberReservation | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  // Cargar datos del store
+  // Cargar datos del store y sincronizar con Supabase
   useEffect(() => {
     const loadData = () => {
       const storedS = getStoredServices().filter(s => s.active !== false);
@@ -96,6 +98,11 @@ function BookingContent() {
     };
 
     loadData();
+
+    // Sincronizar con Supabase en segundo plano
+    syncAllFromSupabase().then(() => {
+      loadData();
+    }).catch(() => {});
 
     window.addEventListener("imperio_store_updated", loadData);
     window.addEventListener("storage", loadData);
@@ -191,7 +198,7 @@ function BookingContent() {
   };
 
   // Enviar y registrar reserva
-  const handleConfirmReservation = (e: React.FormEvent) => {
+  const handleConfirmReservation = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
 
@@ -213,21 +220,22 @@ function BookingContent() {
       return;
     }
 
-    // Doble verificación: comprobar que el turno no esté ocupado
-    const currentReservations = getStoredReservations();
-    const isAlreadyTaken = currentReservations.some(
-      r => r.date === selectedDate && r.time === selectedTime && r.status !== 'cancelled'
-    );
-
-    if (isAlreadyTaken) {
-      setErrorMsg("¡Ups! Este turno fue reservado hace unos instantes. Por favor regresa y elige otro horario.");
-      return;
-    }
-
     setIsSubmitting(true);
 
     try {
-      const newBooking = addReservation({
+      // Doble verificación en tiempo real: comprobar que el turno no esté ocupado en Supabase
+      const currentReservations = await fetchStoredReservations();
+      const isAlreadyTaken = currentReservations.some(
+        r => r.date === selectedDate && r.time === selectedTime && r.status !== 'cancelled'
+      );
+
+      if (isAlreadyTaken) {
+        setIsSubmitting(false);
+        setErrorMsg("¡Ups! Este turno fue reservado hace unos instantes en otro dispositivo. Por favor regresa y elige otro horario.");
+        return;
+      }
+
+      const newBooking = await addReservation({
         clientName: clientInfo.name.trim(),
         phone: cleanedPhone,
         serviceId: selectedService.id,
@@ -253,8 +261,7 @@ function BookingContent() {
       setStep(4);
       window.scrollTo({ top: 0, behavior: "smooth" });
 
-      // Requisito 3: Notificación de nueva reserva al administrador
-      // Se abre WhatsApp inmediatamente con el mensaje ya listo
+      // Notificación de nueva reserva al administrador
       const whatsappUrl = getWhatsAppReservationUrl(newBooking);
       if (typeof window !== "undefined") {
         window.open(whatsappUrl, "_blank", "noopener,noreferrer");
